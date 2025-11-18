@@ -2,25 +2,33 @@ const dgram = require('dgram');
 const fs = require('fs');
 const readline = require('readline');
 
+// --- CONSTANTES DE TEMPO E CONFIGURAÇÃO ---
+// Intervalo de envio da tabela para vizinhos (15 segundos)
 const ROUTE_ADVERT_INTERVAL = 15000;
+// Intervalo de impressão da tabela na tela (20 segundos)
 const PRINT_TABLE_INTERVAL = 20000;
+// Intervalo para checar se vizinhos estão mudos (5 segundos)
 const NEIGHBOR_CHECK_INTERVAL = 5000;
+// Tempo limite para considerar um vizinho morto (35 segundos sem resposta)
 const NEIGHBOR_TIMEOUT = 35000;
 
-if (process.argv.length < 5) {
-  console.error('Usage: node roteador.js <MY_IP> <PORT> <SEND_PORT> [config_file]');
+// Validação dos argumentos iniciais
+if (process.argv.length < 3) {
+  console.error('Uso: node roteador.js <MEU_IP> <PORTA_ESCUTA> <PORTA_ENVIO> [arquivo_config]');
   process.exit(1);
 }
 
+// --- VARIÁVEIS GLOBAIS ---
 const MY_IP = process.argv[2];
-const UDP_PORT = parseInt(process.argv[3]);
-const UDP_PORT_SEND = parseInt(process.argv[4]);
-const CONFIG_FILE = process.argv[5] || 'roteadores.txt';
+const UDP_PORT = 9000; //parseInt(process.argv[3]);
+const UDP_PORT_SEND = 9000; //parseInt(process.argv[4]);
+const CONFIG_FILE = process.argv[3] || 'roteadores.txt';
 
-let configuredNeighbors = [];
-let neighborData = new Map();
-let routingTable = new Map();
+let configuredNeighbors = []; // Lista de vizinhos lida do arquivo
+let neighborData = new Map(); // Guarda o estado (última vez visto e rotas) de cada vizinho
+let routingTable = new Map(); // A tabela de roteamento final
 
+// --- LEITURA DA CONFIGURAÇÃO ---
 try {
   const content = fs.readFileSync(CONFIG_FILE, 'utf-8');
   configuredNeighbors = content
@@ -28,10 +36,11 @@ try {
     .map(l => l.trim())
     .filter(l => l.length > 0 && !l.startsWith('#') && l !== MY_IP);
 } catch (err) {
-  console.error(err.message);
+  console.error(`Erro ao ler arquivo de configuração: ${err.message}`);
   process.exit(1);
 }
 
+// Inicializa a memória para os vizinhos conhecidos no arquivo
 for (const n of configuredNeighbors) {
   neighborData.set(n, {
     lastHeard: Date.now(),
@@ -39,43 +48,54 @@ for (const n of configuredNeighbors) {
   });
 }
 
+// --- CONFIGURAÇÃO DO SOCKET UDP ---
 const socket = dgram.createSocket('udp4');
 
 socket.on('error', (err) => {
-  console.error(err.message);
+  console.error(`Erro no socket: ${err.message}`);
   socket.close();
 });
 
 socket.on('message', (msgBuf, rinfo) => {
   const msg = msgBuf.toString('utf-8').trim();
+  // Remove prefixo IPv6 se o Node adicionar, para garantir comparação de string correta
   const senderIP = rinfo.address.replace('::ffff:', '');
 
+  // Roteamento de mensagens baseado no primeiro caractere (Protocolo)
   if (msg.startsWith('!')) {
-    handleTextMessage(msg, senderIP);
+    handleTextMessage(msg, senderIP);        // Mensagem de Chat
   } else if (msg.startsWith('*')) {
-    handleRouterAnnouncement(msg, senderIP);
+    handleRouterAnnouncement(msg, senderIP); // Novo roteador na rede
   } else if (msg.startsWith('#')) {
-    handleRouteAnnouncement(msg, senderIP);
+    handleRouteAnnouncement(msg, senderIP);  // Atualização de Rotas (Distance Vector)
   }
 });
 
+// Inicia o servidor
 socket.bind(UDP_PORT, () => {
-  console.log(`Router ${MY_IP} running on port ${UDP_PORT}`);
+  console.log(`Roteador iniciado: IP ${MY_IP} na porta ${UDP_PORT}`);
+  
+  // Estado inicial
   recomputeRoutingTable();
   setupCLI();
 
+  // Configura os temporizadores cíclicos
   setInterval(sendRoutingTable, ROUTE_ADVERT_INTERVAL);
   setInterval(printRoutingTable, PRINT_TABLE_INTERVAL);
   setInterval(checkTimeouts, NEIGHBOR_CHECK_INTERVAL);
 });
 
+// --- FUNÇÕES AUXILIARES ---
+
 function now() {
   return Date.now();
 }
 
+// Obtém ou cria a entrada de um vizinho na memória
 function getNeighbor(ip) {
   if (!neighborData.has(ip)) {
     neighborData.set(ip, { lastHeard: now(), routes: {} });
+    // Adiciona à lista de vizinhos se for um novo descoberto dinamicamente
     if (!configuredNeighbors.includes(ip)) {
       configuredNeighbors.push(ip);
     }
@@ -83,22 +103,29 @@ function getNeighbor(ip) {
   return neighborData.get(ip);
 }
 
+// --- LÓGICA DE ROTEAMENTO (DISTANCE VECTOR) ---
+
 function recomputeRoutingTable() {
+  // Guarda versão anterior para detectar mudanças
   const oldTableJson = JSON.stringify(Array.from(routingTable.entries()));
   const newTable = new Map();
 
   for (const [nIP, data] of neighborData.entries()) {
+    // Se o vizinho expirou (timeout), ignoramos as rotas dele
     if (now() - data.lastHeard > NEIGHBOR_TIMEOUT) continue;
 
+    // Adiciona rota direta para o vizinho (Custo 1)
     if (!newTable.has(nIP) || newTable.get(nIP).metric > 1) {
       newTable.set(nIP, { metric: 1, nextHop: nIP });
     }
 
+    // Processa as rotas que este vizinho nos oferece
     for (const [destIP, cost] of Object.entries(data.routes)) {
-      if (destIP === MY_IP) continue;
+      if (destIP === MY_IP) continue; // Evita loop para nós mesmos
       
-      const totalCost = cost + 1;
+      const totalCost = cost + 1; // Custo total = custo do vizinho + 1
       
+      // Se é uma rota nova ou uma rota melhor (menor métrica), atualizamos
       if (!newTable.has(destIP)) {
         newTable.set(destIP, { metric: totalCost, nextHop: nIP });
       } else {
@@ -112,9 +139,10 @@ function recomputeRoutingTable() {
 
   routingTable = newTable;
 
+  // Se houve mudança, avisa e dispara envio imediato (Triggered Update)
   const newTableJson = JSON.stringify(Array.from(routingTable.entries()));
   if (oldTableJson !== newTableJson) {
-    console.log('[ROUTING] Table Updated.');
+    console.log('[ROTEAMENTO] Tabela atualizada. Enviando atualização...');
     printRoutingTable();
     sendRoutingTable();
   }
@@ -123,21 +151,25 @@ function recomputeRoutingTable() {
 function sendRoutingTable() {
   let msg = '';
   for (const [dest, info] of routingTable.entries()) {
+    // Split Horizon simples: não enviamos a rota de volta para quem a originou (opcional, mas aqui enviamos para todos)
     if (dest === MY_IP) continue;
     msg += `#${dest}-${info.metric}`;
   }
   
+  // FIX CRÍTICO: Se a mensagem estiver vazia (sem rotas), enviamos apenas '#'
+  // Isso serve como "Heartbeat" para o vizinho saber que ainda estamos vivos.
   if (msg.length === 0) msg = '#';
 
   const buf = Buffer.from(msg, 'utf-8');
   for (const n of configuredNeighbors) {
     socket.send(buf, 0, buf.length, UDP_PORT_SEND, n, (err) => {
-      if (err) {/* ignore */}
+      // Erros de envio são ignorados para não travar o fluxo
     });
   }
 }
 
 function sendRouterAnnouncement() {
+  // Anuncia presença para vizinhos: *MEU_IP
   const msg = `*${MY_IP}`;
   const buf = Buffer.from(msg, 'utf-8');
   for (const n of configuredNeighbors) {
@@ -145,12 +177,15 @@ function sendRouterAnnouncement() {
   }
 }
 
+// --- HANDLERS DE MENSAGENS ---
+
 function handleRouteAnnouncement(msg, senderIP) {
   const neighbor = getNeighbor(senderIP);
-  neighbor.lastHeard = now();
+  neighbor.lastHeard = now(); // Reseta o timer de timeout do vizinho
   
+  // Formato da msg: #IP-Metrica#IP-Metrica
   const parts = msg.split('#').filter(p => p.length > 0);
-  neighbor.routes = {}; 
+  neighbor.routes = {}; // Limpa rotas antigas para substituir pelas novas
 
   for (const p of parts) {
     const [dest, metricStr] = p.split('-');
@@ -166,16 +201,18 @@ function handleRouterAnnouncement(msg, senderIP) {
   const announcedIP = msg.substring(1).trim();
   if (announcedIP === MY_IP) return;
   
-  console.log(`[EVENT] New router detected: ${announcedIP}`);
+  console.log(`[EVENTO] Novo roteador detectado: ${announcedIP}`);
   const neighbor = getNeighbor(senderIP);
   neighbor.lastHeard = now();
+  // Adiciona temporariamente rota zero para o vizinho novo para acelerar convergência
   neighbor.routes[announcedIP] = 0; 
   
-  sendRoutingTable(); 
+  sendRoutingTable(); // Responde imediatamente
   recomputeRoutingTable();
 }
 
 function handleTextMessage(msg, senderIP) {
+  // Formato: !Origem;Destino;Mensagem
   const payload = msg.substring(1);
   const parts = payload.split(';');
   
@@ -186,26 +223,29 @@ function handleTextMessage(msg, senderIP) {
   const text = parts.slice(2).join(';');
 
   if (dest === MY_IP) {
-    console.log(`[TEXT RECEIVED] From: ${src} | To: ${dest} | Msg: ${text}`);
+    console.log(`[MENSAGEM RECEBIDA] De: ${src} | Msg: ${text}`);
   } else {
     const route = routingTable.get(dest);
     if (route) {
-      console.log(`[TEXT FORWARD] Forwarding msg from ${src} to ${dest} via ${route.nextHop}`);
+      console.log(`[ENCAMINHANDO] Msg de ${src} para ${dest} via ${route.nextHop}`);
       const buf = Buffer.from(msg, 'utf-8');
       socket.send(buf, 0, buf.length, UDP_PORT_SEND, route.nextHop, (err) => {});
     } else {
-      console.log(`[TEXT DROP] No route for ${dest}. Msg from ${src} discarded.`);
+      console.log(`[FALHA] Sem rota para ${dest}. Mensagem descartada.`);
     }
   }
 }
 
+// --- VERIFICAÇÃO DE VIZINHOS INATIVOS ---
+
 function checkTimeouts() {
   let changed = false;
   for (const [ip, data] of neighborData.entries()) {
+    // Verifica se o tempo desde a última mensagem excede 35s
     if (now() - data.lastHeard > NEIGHBOR_TIMEOUT) {
       if (routingTable.has(ip)) { 
         changed = true; 
-        console.log(`[TIMEOUT] Neighbor ${ip} expired.`);
+        console.log(`[TIMEOUT] Vizinho ${ip} parou de responder.`);
       }
     }
   }
@@ -213,13 +253,15 @@ function checkTimeouts() {
 }
 
 function printRoutingTable() {
-  console.log('\n--- Routing Table ---');
-  console.log('Dest IP\t\tMetric\tNext Hop');
+  console.log('\n--- Tabela de Roteamento ---');
+  console.log('IP Destino\tMétrica\tSaída (Next Hop)');
   for (const [dest, info] of routingTable.entries()) {
-    console.log(`${dest}\t${info.metric}\t${info.nextHop}`);
+    console.log(`${dest}\t\t${info.metric}\t${info.nextHop}`);
   }
-  console.log('---------------------\n');
+  console.log('----------------------------\n');
 }
+
+// --- INTERFACE DE LINHA DE COMANDO (CLI) ---
 
 function setupCLI() {
   const rl = readline.createInterface({
@@ -241,10 +283,10 @@ function setupCLI() {
         const buf = Buffer.from(fullMsg, 'utf-8');
         socket.send(buf, 0, buf.length, UDP_PORT_SEND, route.nextHop, (err) => {
           if (err) console.error(err.message);
-          else console.log(`[CLI] Message sent to ${dest} via ${route.nextHop}`);
+          else console.log(`[CLI] Mensagem enviada para ${dest} via ${route.nextHop}: ${text}`);
         });
       } else {
-        console.log(`[CLI] No route to ${dest}`);
+        console.log(`[CLI] Erro: Destino inalcançável (Sem rota).`);
       }
     } else if (cmd === 'table') {
       printRoutingTable();
@@ -254,6 +296,7 @@ function setupCLI() {
   });
 }
 
+// Se houver vizinhos configurados, anuncia presença imediatamente ao ligar
 if (configuredNeighbors.length > 0) {
   sendRouterAnnouncement();
 }

@@ -1,5 +1,7 @@
 Autores:
+23102527-1 -> Luiza Hackenhaar Naziazeno
 23107539-1 -> Sophia Mendes da Silveira
+
 
 # Pré-requisitos
 -> Ter o Node.js instalado no computador.

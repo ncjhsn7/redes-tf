@@ -14,7 +14,7 @@ const NEIGHBOR_TIMEOUT = 35000;
 
 // Validação dos argumentos iniciais
 if (process.argv.length < 3) {
-  console.error('Uso: node roteador.js <MEU_IP> <PORTA_ESCUTA> <PORTA_ENVIO> [arquivo_config]');
+  console.error('Uso: node file.js <MEU_IP> [arquivo_config]');
   process.exit(1);
 }
 
@@ -63,11 +63,14 @@ socket.on('message', (msgBuf, rinfo) => {
 
   // Roteamento de mensagens baseado no primeiro caractere (Protocolo)
   if (msg.startsWith('!')) {
-    handleTextMessage(msg, senderIP);        // Mensagem de Chat
+    handleTextMessage(msg, senderIP);        // Mensagem de Conversa
+    console.log('[RECEBIDO]', msg);
   } else if (msg.startsWith('*')) {
     handleRouterAnnouncement(msg, senderIP); // Novo roteador na rede
+    console.log('[RECEBIDO]', msg);
   } else if (msg.startsWith('#')) {
     handleRouteAnnouncement(msg, senderIP);  // Atualização de Rotas (Distance Vector)
+    console.log('[RECEBIDO]', msg);
   }
 });
 
@@ -75,6 +78,11 @@ socket.on('message', (msgBuf, rinfo) => {
 socket.bind(UDP_PORT, () => {
   console.log(`Roteador iniciado: IP ${MY_IP} na porta ${UDP_PORT}`);
   
+  // Se houver vizinhos configurados, anuncia presença imediatamente ao ligar
+  if (configuredNeighbors.length > 0) {
+    sendRouterAnnouncement();
+  }
+
   // Estado inicial
   recomputeRoutingTable();
   setupCLI();
@@ -159,6 +167,7 @@ function sendRoutingTable() {
   // FIX CRÍTICO: Se a mensagem estiver vazia (sem rotas), enviamos apenas '#'
   // Isso serve como "Heartbeat" para o vizinho saber que ainda estamos vivos.
   if (msg.length === 0) msg = '#';
+  console.log('[ENVIO]', msg);
 
   const buf = Buffer.from(msg, 'utf-8');
   for (const n of configuredNeighbors) {
@@ -172,6 +181,7 @@ function sendRouterAnnouncement() {
   // Anuncia presença para vizinhos: *MEU_IP
   const msg = `*${MY_IP}`;
   const buf = Buffer.from(msg, 'utf-8');
+  console.log('[ENVIO]', msg);
   for (const n of configuredNeighbors) {
     socket.send(buf, 0, buf.length, UDP_PORT_SEND, n, (err) => {});
   }
@@ -290,13 +300,9 @@ function setupCLI() {
       }
     } else if (cmd === 'table') {
       printRoutingTable();
-    } else if (cmd === 'announce') {
+    } else if (cmd === 'on') {
       sendRouterAnnouncement();
     }
   });
 }
 
-// Se houver vizinhos configurados, anuncia presença imediatamente ao ligar
-if (configuredNeighbors.length > 0) {
-  sendRouterAnnouncement();
-}

@@ -283,21 +283,21 @@ function handleRouteAnnouncement(msg, fromIP) {
 
 function handleRouterAnnouncement(msg, fromIP) {
   const ip = msg.substring(1).trim();
-  console.log(`[RECEBIDO] Anúncio de roteador. IP informado: ${ip} (origem: ${ip})`);
+  console.log(`[RECEBIDO] Anúncio de roteador. IP informado: ${ip} (origem: ${fromIP})`);
 
   if (!ip && ip === MY_IP) return;
 
-  let st = neighborStates.get(ip);
+  let st = neighborStates.get(fromIP);
   if (!st) {
     st = { lastHeard: nowMs(), routes: {}, state: {} };
-    neighborStates.set(ip, st);
-    neighbors.push(ip);
-    console.log(`[INFO] Novo vizinho adicionado: ${ip}`);
+    neighborStates.set(fromIP, st);
+    neighbors.push(fromIP);
+    console.log(`[INFO] Novo vizinho adicionado: ${fromIP}`);
   }
 
   st.lastHeard = nowMs();
-  st.routes[ip] = 1;
-  touchNeighbor(ip, null, true); // ativa o vizinho
+  st.routes[fromIP] = 1;
+  touchNeighbor(fromIP, null, true); // ativa o vizinho
   const changed = recomputeRoutingTable();
   if (changed) {
     sendRoutingTable();

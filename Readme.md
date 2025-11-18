@@ -1,5 +1,7 @@
 Autores:
+21101891-6 -> Bruno Becker Silva
 23102527-1 -> Luiza Hackenhaar Naziazeno
+19102850-5 -> Nicolas Pietro
 23107539-1 -> Sophia Mendes da Silveira
 
 

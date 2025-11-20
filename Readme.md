@@ -1,8 +1,8 @@
 Autores:
-21101891-6 -> Bruno Becker Silva
-23102527-1 -> Luiza Hackenhaar Naziazeno
-19102850-5 -> Nicolas Pietro
-23107539-1 -> Sophia Mendes da Silveira
+Bruno Becker Silva
+Luiza Hackenhaar Naziazeno
+Nicolas Pietro
+Sophia Mendes da Silveira
 
 
 # Pré-requisitos
